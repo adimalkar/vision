@@ -3,6 +3,7 @@ from collections import OrderedDict
 from typing import Optional
 
 import torch
+import torchvision
 from torch import nn, Tensor
 from torch.nn import functional as F
 from torchvision.ops import complete_box_iou_loss, distance_box_iou_loss, FrozenBatchNorm2d, generalized_box_iou_loss
@@ -173,10 +174,13 @@ class BoxCoder:
         box_sum = 0
         for val in boxes_per_image:
             box_sum += val
-        if box_sum > 0:
+        # Under torch.export box_sum is usually data-dependent and can't be compared with 0. The reshapes are
+        # traced with their sizes resolved, so the exported program also handles box_sum == 0.
+        reshape = torchvision._is_exporting() or box_sum > 0
+        if reshape:
             rel_codes = rel_codes.reshape(box_sum, -1)
         pred_boxes = self.decode_single(rel_codes, concat_boxes)
-        if box_sum > 0:
+        if reshape:
             pred_boxes = pred_boxes.reshape(box_sum, -1, 4)
         return pred_boxes
 

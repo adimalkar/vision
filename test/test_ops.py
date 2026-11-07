@@ -1173,6 +1173,44 @@ optests.generate_opcheck_tests(
 )
 
 
+class TestBatchedNMSExport:
+    class FilterThenNMS(torch.nn.Module):
+        # As in the detection models, the boxes are filtered first, so their number is data-dependent.
+        def forward(self, boxes, scores, idxs):
+            keep = torch.where(scores > 0.5)[0]
+            return ops.batched_nms(boxes[keep], scores[keep], idxs[keep], 0.5)
+
+    @classmethod
+    def export(cls):
+        n = torch.export.Dim("n")
+        dynamic_shapes = {"boxes": {0: n}, "scores": {0: n}, "idxs": {0: n}}
+        return torch.export.export(cls.FilterThenNMS(), cls.make_inputs(50), dynamic_shapes=dynamic_shapes).module()
+
+    @staticmethod
+    def make_inputs(num_boxes, seed=0):
+        g = torch.Generator().manual_seed(seed)
+        xy = torch.rand(num_boxes, 2, generator=g) * 100
+        boxes = torch.cat((xy, xy + torch.rand(num_boxes, 2, generator=g) * 50 + 1), dim=1)
+        scores = torch.rand(num_boxes, generator=g)
+        idxs = torch.randint(0, 4, (num_boxes,), generator=g)
+        return boxes, scores, idxs
+
+    def test_export(self):
+        exported = self.export()
+        # In eager mode, 3000 boxes use the vanilla implementation, so this also checks that both agree.
+        for num_boxes in (50, 3000):
+            inputs = self.make_inputs(num_boxes, seed=num_boxes)
+            torch.testing.assert_close(exported(*inputs), self.FilterThenNMS()(*inputs))
+
+    @pytest.mark.parametrize("num_left", (0, 1))
+    def test_export_few_boxes_left(self, num_left):
+        exported = self.export()
+        boxes, scores, idxs = self.make_inputs(50)
+        scores = torch.full_like(scores, 0.1)
+        scores[:num_left] = 0.9  # only these boxes pass the score threshold
+        torch.testing.assert_close(exported(boxes, scores, idxs), torch.arange(num_left))
+
+
 class TestDeformConv:
     dtype = torch.float64
     mps_dtype = torch.float32

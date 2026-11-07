@@ -1024,6 +1024,29 @@ def test_detection_model_trainable_backbone_layers(model_fn, disable_weight_load
     assert n_trainable_params == _model_tests_values[model_name]["n_trn_params_per_layer"]
 
 
+@pytest.mark.parametrize("keep_detections", (True, False))
+def test_detection_model_export(keep_detections):
+    # The number of boxes after each filtering step is data-dependent. A score threshold above 1 leaves no
+    # detections, which the exported program has to handle as well.
+    torch.manual_seed(0)
+    model = models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
+        weights=None, weights_backbone=None, box_score_thresh=0.0 if keep_detections else 2.0
+    ).eval()
+    # Untrained weights give every detection the same score, and which of the tied boxes is kept isn't defined.
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(torch.randn_like(p) * 0.1)
+    x = torch.rand(3, 320, 320)
+    exported = torch.export.export(model, ([x],)).module()
+    with torch.no_grad():
+        expected = model([x])
+        actual = exported([x])
+    scores = expected[0]["scores"]
+    assert (len(scores) > 0) == keep_detections
+    assert len(torch.unique(scores)) == len(scores)
+    torch.testing.assert_close(actual, expected)
+
+
 @needs_cuda
 @pytest.mark.parametrize("model_fn", list_model_fns(models.optical_flow))
 @pytest.mark.parametrize("scripted", (False, True))

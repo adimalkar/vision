@@ -76,6 +76,13 @@ def _is_tracing():
     return torch._C._get_tracing_state()
 
 
+def _is_exporting() -> bool:
+    # Behind the scripting check, so that TorchScript doesn't compile torch.compiler.is_exporting().
+    if not torch.jit.is_scripting():
+        return torch.compiler.is_exporting()
+    return False
+
+
 def disable_beta_transforms_warning():
     # Noop, only exists to avoid breaking existing code.
     # See https://github.com/pytorch/vision/issues/7896

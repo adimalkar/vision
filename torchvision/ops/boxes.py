@@ -83,6 +83,10 @@ def batched_nms(
     # Benchmarks that drove the following thresholds are at
     # https://github.com/pytorch/vision/issues/1311#issuecomment-781329339
     # and https://github.com/pytorch/vision/pull/8925
+    if torchvision._is_exporting():
+        # Under torch.export the number of boxes is usually data-dependent (detection models filter them by
+        # score and size first), so it can't be branched on.
+        return _batched_nms_coordinate_trick_export(boxes, scores, idxs, iou_threshold)
     if boxes.numel() > (4000 if boxes.device.type == "cpu" else 100_000) and not torchvision._is_tracing():
         return _batched_nms_vanilla(boxes, scores, idxs, iou_threshold)
     else:
@@ -103,6 +107,22 @@ def _batched_nms_coordinate_trick(
     if boxes.numel() == 0:
         return torch.empty((0,), dtype=torch.int64, device=boxes.device)
     max_coordinate = boxes.max()
+    offsets = idxs.to(boxes) * (max_coordinate + torch.tensor(1).to(boxes))
+    boxes_for_nms = boxes + offsets[:, None]
+    keep = nms(boxes_for_nms, scores, iou_threshold)
+    return keep
+
+
+def _batched_nms_coordinate_trick_export(
+    boxes: Tensor,
+    scores: Tensor,
+    idxs: Tensor,
+    iou_threshold: float,
+) -> Tensor:
+    # Same as _batched_nms_coordinate_trick, without the early return for empty input, which would branch on a
+    # data-dependent size. The appended zero keeps max() defined when there are no boxes. The offsets only need
+    # to exceed the largest coordinate, so it doesn't change the result otherwise.
+    max_coordinate = torch.cat([boxes.flatten(), boxes.new_zeros(1)]).max()
     offsets = idxs.to(boxes) * (max_coordinate + torch.tensor(1).to(boxes))
     boxes_for_nms = boxes + offsets[:, None]
     keep = nms(boxes_for_nms, scores, iou_threshold)
